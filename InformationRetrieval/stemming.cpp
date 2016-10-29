@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <functional>
 
 #include <chrono>
 #include <ctime>
@@ -40,11 +41,6 @@ const char* doc_data_fname = "Doc.dat";
 const char* word_data_fname = "Term.dat";
 const char* inverse_data_fname = "index_tmp.dat";
 
-// Query structure
-struct query {
-	map<string, int> qi;
-};
-
 struct word_info {
 	int id;
 	int cf;
@@ -56,7 +52,7 @@ struct word_info {
 	}
 };
 
-struct inverted_index{
+struct inverted_index {
 	int word_id;
 	string data;
 	bool operator<(inverted_index& t) {
@@ -107,7 +103,7 @@ void constructStopWordSet() {
 		}
 		file.close();
 	}
-	
+
 	// add two letter words to the stopword set
 	string two("aa");
 	for (int i = 'a'; i <= 'z'; ++i) {
@@ -134,7 +130,7 @@ void tokenize_only_alpha(string s, vector<string>& tokens) {
 			is_counting = true;
 			tmp = s.at(i);
 		}
-		else if (is_counting && is_valid_char(s.at(i))){
+		else if (is_counting && is_valid_char(s.at(i))) {
 			tmp += s.at(i);
 		}
 		else if (is_counting && !is_valid_char(s.at(i))) {
@@ -179,16 +175,16 @@ void create_inverted_index_file(ofstream& iif) {
 	tokens = utility::tokenizer(line, '\t');
 	doc_id = stoi(tokens[0]);
 	while (1) {
-		tf_idf_word[tokens[1]].first = stoi(tokens[2]);
-		tf_idf_word[tokens[1]].second = (log(stod(tokens[2])) + 1) * log((double)doc_count / word_data_table[tokens[1]].df);
-		denominator += pow(tf_idf_word[tokens[1]].second,2);
+		tf_idf_word.insert(make_pair(tokens[1], 
+			make_pair(stoi(tokens[2]), (log(stod(tokens[2])) + 1) * log((double)doc_count / word_data_table[tokens[1]].df))));
+		denominator += tf_idf_word[tokens[1]].second * tf_idf_word[tokens[1]].second;
 		// END OF FILE
 		if (!getline(index_file, line)) {
 			for (auto &word : tf_idf_word) {
 				iif << utility::format_digit(6, word_data_table[word.first].id)
 					<< utility::format_digit(6, doc_id)
 					<< utility::format_digit(3, word.second.first)
-					<< utility::format_weight(word.second.second / denominator)
+					<< utility::format_weight(word.second.second / sqrt(denominator))
 					<< endl;
 			}
 			tf_idf_word.clear();
@@ -202,7 +198,7 @@ void create_inverted_index_file(ofstream& iif) {
 				iif << utility::format_digit(6, word_data_table[word.first].id)
 					<< utility::format_digit(6, doc_id)
 					<< utility::format_digit(3, word.second.first)
-					<< utility::format_weight(word.second.second / denominator)
+					<< utility::format_weight(word.second.second / sqrt(denominator))
 					<< endl;
 			}
 			// INITIALIZATION
@@ -278,6 +274,7 @@ void fast_parse(ifstream& file, ofstream& doc_data, ofstream& stem_output) {
 						Porter2Stemmer::stem(word);	// stem
 						if (word != "" && stopwords.find(word) == stopwords.end()) {
 							buffer.push_back(word);
+							found_in_the_current_doc.insert(word);
 						}
 					}
 				}
@@ -287,6 +284,7 @@ void fast_parse(ifstream& file, ofstream& doc_data, ofstream& stem_output) {
 						Porter2Stemmer::stem(word);	// stem
 						if (word != "" && stopwords.find(word) == stopwords.end()) {
 							buffer.push_back(word);
+							found_in_the_current_doc.insert(word);
 						}
 					}
 				}
@@ -307,7 +305,12 @@ string merge(int first, int last) {
 		f2 = merge(mid + 1, last);
 		file1.open(f1);
 		file2.open(f2);
-		f3 = f1 + "_" + f2;
+		if (f1.size() + f2.size() >= 50) {
+			f3 = f1.substr(0, f1.size() / 2) + "_" + f2.substr(0, f2.size() / 2);
+		}
+		else {
+			f3 = f1 + "_" + f2;
+		}
 		res_file.open(f3);
 
 		getline(file1, line1);
@@ -359,11 +362,11 @@ void external_merge_sort(ifstream& pre_file) {
 	int file_cnt = 0;
 	ofstream out;
 	int cnt = 0;
-	
+
 	// PASS 1
 	while (getline(pre_file, line)) {
 		if (cnt < 1500000) {
-			local.push_back(inverted_index(stoi(line.substr(0,6)), line.substr(6,string::npos)));
+			local.push_back(inverted_index(stoi(line.substr(0, 6)), line.substr(6, string::npos)));
 			++cnt;
 		}
 		else {
@@ -388,7 +391,7 @@ void external_merge_sort(ifstream& pre_file) {
 	out.close();
 
 	// PASS 2
-	string final_file = merge(0, file_cnt-1);
+	string final_file = merge(0, file_cnt - 1);
 	ifstream from(final_file);
 	out.open("Index.dat");
 	while (getline(from, line)) {
@@ -417,16 +420,7 @@ void load_term_file(ifstream& file) {
 	}
 }
 
-double get_weight_for_word(ifstream& file, string word) {
-	string line;
-	int start = word_data_table[word].start;
-	file.seekg(0, file.beg);
-	file.seekg(start*(6 + 6 + 3 + 7 + 2), file.beg);
-	getline(file, line);
-	return stod(line.substr(15, string::npos));
-}
-
-void process_query_word(string& word, query& Q) {
+void process_query_word(string& word, map<string, int>& Q) {
 	Porter2Stemmer::trim(word);
 	if (stopwords.find(word) != stopwords.end()) return;
 	else {
@@ -434,11 +428,11 @@ void process_query_word(string& word, query& Q) {
 		if (stopwords.find(word) != stopwords.end() || word == "") return;
 		else {
 			// Query weight is calculated by its term frequency.
-			if (Q.qi.find(word) == Q.qi.end()) {
-				Q.qi[word] = 1;
+			if (Q.find(word) == Q.end()) {
+				Q[word] = 1;
 			}
 			else {
-				Q.qi[word]++;
+				Q[word]++;
 			}
 		}
 	}
@@ -449,35 +443,124 @@ void process_query_word(string& word, query& Q) {
 	2. Count query term frequency to calculate qi in the vector space model.
 	@returns queries
 */
-vector<query> read_query_file(ifstream& file) {
+map< int, map<string, int> > read_query_file(ifstream& file) {
 	string line;
-	vector<query> queries;
+	map<int, map<string, int> > queries;
+	map<string, int> query;
 	vector<string> tokens;
+	int query_num;
 	while (getline(file, line)) {
-		if (line == "<top>") {
-			query Q;
-			getline(file, line);
-			while (line != "</top>") {
-				tokens = utility::tokenizer(line, ' ');
-				if (tokens.size() == 0) { getline(file, line);  continue; }
-				else if (tokens[0] == "<num>") { getline(file, line); continue; }
-				else if (tokens[0] == "<title>") { for (int i = 1; i < tokens.size(); ++i) process_query_word(tokens[i], Q); }
-				else if (tokens[0] == "<desc>") { getline(file, line); continue; }
-				else if (tokens[0] == "<narr>") { getline(file, line); continue; }
-				else
-					for (auto s : tokens) { process_query_word(s, Q); }
-				getline(file, line);
-			}
-			queries.push_back(Q);
+		tokens = utility::tokenizer(line, ' ');
+		if (tokens.size() == 0) continue;
+		else if (tokens[0] == "<top>" || tokens[0] == "</top>") continue;
+		else if (tokens[0] == "<num>") {
+			query_num = stoi(tokens[2]);
+			queries.insert(make_pair(query_num, query));
 		}
+		else if (tokens[0] == "<title>") { for (int i = 1; i < tokens.size(); ++i) process_query_word(tokens[i], queries[query_num]); }
+		else if (tokens[0] == "<desc>") { continue; }
+		else if (tokens[0] == "<narr>") { continue; }
+		else
+			for (auto s : tokens) { process_query_word(s, queries[query_num]); };
 	}
 	return queries;
 }
 
+set<int> get_relevant_documents(map<string, int>& Q, int n) {
+	ifstream iindex("Index.dat");
+	int id, df, start;
+	map<int, int> doc_freq_map;
+	set<int> rel_docs;
+	string line;
+	for (auto q : Q) {
+		if (word_data_table.find(q.first) == word_data_table.end()) continue;
+		df = word_data_table[q.first].df;
+		start = word_data_table[q.first].start;
+		iindex.seekg((unsigned long long)start*(6 + 6 + 3 + 7 + 2), iindex.beg);
+		for (int i = 0; i < df; ++i) {
+			getline(iindex, line);
+			id = stoi(line.substr(6, 6));
+			if (doc_freq_map.find(id) == doc_freq_map.end()) {
+				doc_freq_map[id] = 1;
+			}
+			else {
+				doc_freq_map[id]++;
+			}
+		}
+	}
+	iindex.close();
+
+	for (auto x : doc_freq_map) {
+		if (x.second >= n) {
+			rel_docs.insert(x.first);
+		}
+	}
+	return rel_docs;
+}
+
+double get_weight_for_word(ifstream& file, string word) {
+	string line;
+	int start = word_data_table[word].start;
+	file.seekg(0, file.beg);
+	file.seekg(start*(6 + 6 + 3 + 7 + 2), file.beg);
+	getline(file, line);
+	return stod(line.substr(15, string::npos));
+}
+
+vector< pair<double, int> > vector_space_model(set<int>& rel_docs, map<string, int> query) {
+	map<int, pair<double, double> > doc_cos_dist;
+	map<int, pair<double, double> >::iterator it;
+	vector < pair<double, int > > result_vector;
+	ifstream iindex("Index.dat");
+	string line;
+	int df, doc_id, start;
+	double weight;
+
+	bool test = false;
+	for (auto word : query) {
+		if (word_data_table.find(word.first) == word_data_table.end()) continue;
+		df = word_data_table[word.first].df;
+		start = word_data_table[word.first].start;
+		iindex.seekg((unsigned long long)start*(6 + 6 + 3 + 7 + 2), iindex.beg);
+		for (int i = 0; i < df; ++i) {
+			getline(iindex, line);
+			doc_id = stoi(line.substr(6, 6));
+			// If it's not in the relevant documents set, do not count in.
+			if (rel_docs.find(doc_id) == rel_docs.end()) continue;
+			weight = stod(line.substr(15, 7));
+			if ((it = doc_cos_dist.find(doc_id)) == doc_cos_dist.end()) {
+				doc_cos_dist.insert(make_pair(doc_id, make_pair((word.second * weight), weight * weight)));
+			}
+			else {
+				it->second.first += word.second * weight;
+				it->second.second += weight * weight;
+			}
+		}
+	}
+	iindex.close();
+	for (auto res : doc_cos_dist) {
+		result_vector.push_back(make_pair((res.second.first / sqrt(res.second.second)), res.first));
+	}
+	if (result_vector.size() > 0)
+		sort(result_vector.begin(), result_vector.end(), greater<pair<double, int>>());
+	return result_vector;
+}
+
+string get_doc_name(int doc_id) {
+	ifstream file(doc_data_fname);
+	string line;
+	while (doc_id-- > 1) getline(file, line);
+	getline(file, line);
+	file.close();
+
+	return utility::tokenizer(line, '\t')[1];
+}
+
 int main(int argc, char* argv[]) {
-	// options
-	constructStopWordSet();
+	// initialize irregular word dictionary which will be used in stemming.
 	Porter2Stemmer::construct_irr_verbs_dictionary("irregular_word.txt");
+	// construct stopword set
+	constructStopWordSet();
 
 	string token;
 	vector<string> files;
@@ -492,7 +575,7 @@ int main(int argc, char* argv[]) {
 	utility::get_file_paths(TEXT(".\\data"), files);	// Get file paths
 
 	// Preprocessing
-	if (!if_exists("Term.dat") && !if_exists("Doc.dat") && !if_exists("Index.dat")) {
+	if (!if_exists("Term.dat") && !if_exists("Doc.dat")) {
 		// Open all files, do parsing, stemming, and index creation
 		data_file.open(doc_data_fname);
 		output.open(stemmed_fname);
@@ -522,10 +605,11 @@ int main(int argc, char* argv[]) {
 		create_word_data_file(data_file);
 		data_file.close();
 		cout << "\t생성 완료" << endl << endl;
-
-
-		// Create Inverse index file.	
+	}
+	if (!if_exists("Index.dat")) {
+		// Create Inverse index file.
 		data_file.open(inverse_data_fname);
+
 		if (!data_file.is_open()) {
 			cout << "Index.dat Open Error!" << endl;
 			exit(-1);
@@ -552,22 +636,30 @@ int main(int argc, char* argv[]) {
 		cout << "Finished Loading Term.dat." << endl;
 	}
 
-	// Get weight
-	/*file.open("Index.dat");
-	cout << get_weight_for_word(file, "upgrad") << endl;
-	file.close();*/
-
 	// Query Processing
-	vector<query> queries;
+	map< int, map<string, int> > queries;
 	file.open("topics25.txt");
 	queries = read_query_file(file);
 	file.close();
+
+	// Vector Space Model
+	for (auto &query : queries) {
+		set<int> rel_docs = get_relevant_documents(query.second, 1);
+		
+		vector< pair<double, int> > result = vector_space_model(rel_docs, query.second);
+
+		// Print Vector Space Model Results in a relevance order.
+		cout << "Query number : " << query.first << endl;
+		for (auto &res : result) {
+			cout << res.first << "\t" << get_doc_name(res.second) << endl;
+		}
+		cout << endl;
+	}
 
 	end = system_clock::now();
 	duration<double> elapsed_seconds = end - start;
 	time_t end_time = system_clock::to_time_t(end);
 	cout << "finished computation at " << ctime(&end_time)
 		<< "elapsed time: " << elapsed_seconds.count() << "s\n";
-
-    return 0;
+	return 0;
 }
