@@ -40,6 +40,11 @@ const char* doc_data_fname = "Doc.dat";
 const char* word_data_fname = "Term.dat";
 const char* inverse_data_fname = "index_tmp.dat";
 
+// Query structure
+struct query {
+	map<string, int> qi;
+};
+
 struct word_info {
 	int id;
 	int cf;
@@ -416,9 +421,57 @@ double get_weight_for_word(ifstream& file, string word) {
 	string line;
 	int start = word_data_table[word].start;
 	file.seekg(0, file.beg);
-	file.seekg(start*(6 + 6 + 7 + 2), file.beg);
+	file.seekg(start*(6 + 6 + 3 + 7 + 2), file.beg);
 	getline(file, line);
-	return stod(line.substr(12, string::npos));
+	return stod(line.substr(15, string::npos));
+}
+
+void process_query_word(string& word, query& Q) {
+	Porter2Stemmer::trim(word);
+	if (stopwords.find(word) != stopwords.end()) return;
+	else {
+		Porter2Stemmer::stem(word);
+		if (stopwords.find(word) != stopwords.end() || word == "") return;
+		else {
+			// Query weight is calculated by its term frequency.
+			if (Q.qi.find(word) == Q.qi.end()) {
+				Q.qi[word] = 1;
+			}
+			else {
+				Q.qi[word]++;
+			}
+		}
+	}
+}
+
+/*
+	1. Read query file and trim & stemming the query terms.
+	2. Count query term frequency to calculate qi in the vector space model.
+	@returns queries
+*/
+vector<query> read_query_file(ifstream& file) {
+	string line;
+	vector<query> queries;
+	vector<string> tokens;
+	while (getline(file, line)) {
+		if (line == "<top>") {
+			query Q;
+			getline(file, line);
+			while (line != "</top>") {
+				tokens = utility::tokenizer(line, ' ');
+				if (tokens.size() == 0) { getline(file, line);  continue; }
+				else if (tokens[0] == "<num>") { getline(file, line); continue; }
+				else if (tokens[0] == "<title>") { for (int i = 1; i < tokens.size(); ++i) process_query_word(tokens[i], Q); }
+				else if (tokens[0] == "<desc>") { getline(file, line); continue; }
+				else if (tokens[0] == "<narr>") { getline(file, line); continue; }
+				else
+					for (auto s : tokens) { process_query_word(s, Q); }
+				getline(file, line);
+			}
+			queries.push_back(Q);
+		}
+	}
+	return queries;
 }
 
 int main(int argc, char* argv[]) {
@@ -504,14 +557,10 @@ int main(int argc, char* argv[]) {
 	cout << get_weight_for_word(file, "upgrad") << endl;
 	file.close();*/
 
-	// Query Parsing
-	// Query structure
-	struct query {
-		map<string, int> qi;
-	};
+	// Query Processing
 	vector<query> queries;
-	file.open("topic25.txt");
-	
+	file.open("topics25.txt");
+	queries = read_query_file(file);
 	file.close();
 
 	end = system_clock::now();
