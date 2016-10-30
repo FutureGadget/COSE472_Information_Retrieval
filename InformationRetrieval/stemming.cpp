@@ -66,6 +66,7 @@ struct inverted_index {
 };
 
 int doc_count = 0;	// document id (Which means the number of documents)
+unsigned long long C; // total number of words in the collection.
 
 /**
 	Word index table can be located in the memory. (Heaps' law)
@@ -233,7 +234,7 @@ void fast_parse(ifstream& file, ofstream& doc_data, ofstream& stem_output) {
 			}
 			else if (word == "</DOC>") {
 				// Write to the document data file
-				doc_data << doc_count << '\t' << doc->docno << '\t' << found_in_the_current_doc.size() << endl;
+				doc_data << utility::format_digit(6,doc_count) << doc->docno << utility::format_digit(4,found_in_the_current_doc.size()) << endl;
 				//write_stemmed_document(buffer, stem_output);
 				create_index_file(buffer, stem_output, doc_count);
 				/*
@@ -466,8 +467,7 @@ map< int, map<string, int> > read_query_file(ifstream& file) {
 	return queries;
 }
 
-set<int> get_relevant_documents(map<string, int>& Q, int n) {
-	ifstream iindex("Index.dat");
+set<int> get_relevant_documents(ifstream& iindex, map<string, int>& Q, int n) {
 	int id, df, start;
 	map<int, int> doc_freq_map;
 	set<int> rel_docs;
@@ -488,7 +488,6 @@ set<int> get_relevant_documents(map<string, int>& Q, int n) {
 			}
 		}
 	}
-	iindex.close();
 
 	for (auto x : doc_freq_map) {
 		if (x.second >= n) {
@@ -498,26 +497,16 @@ set<int> get_relevant_documents(map<string, int>& Q, int n) {
 	return rel_docs;
 }
 
-double get_weight_for_word(ifstream& file, string word) {
-	string line;
-	int start = word_data_table[word].start;
-	file.seekg(0, file.beg);
-	file.seekg(start*(6 + 6 + 3 + 7 + 2), file.beg);
-	getline(file, line);
-	return stod(line.substr(15, string::npos));
-}
-
-vector< pair<double, int> > vector_space_model(set<int>& rel_docs, map<string, int> query) {
+vector< pair<double, int> > vector_space_model(ifstream& iindex, set<int>& rel_docs, map<string, int>& query) {
 	map<int, pair<double, double> > doc_cos_dist;
 	map<int, pair<double, double> >::iterator it;
 	vector < pair<double, int > > result_vector;
-	ifstream iindex("Index.dat");
 	string line;
 	int df, doc_id, start;
 	double weight;
 
 	bool test = false;
-	for (auto word : query) {
+	for (auto &word : query) {
 		if (word_data_table.find(word.first) == word_data_table.end()) continue;
 		df = word_data_table[word.first].df;
 		start = word_data_table[word.first].start;
@@ -537,7 +526,7 @@ vector< pair<double, int> > vector_space_model(set<int>& rel_docs, map<string, i
 			}
 		}
 	}
-	iindex.close();
+
 	for (auto res : doc_cos_dist) {
 		result_vector.push_back(make_pair((res.second.first / sqrt(res.second.second)), res.first));
 	}
@@ -546,14 +535,56 @@ vector< pair<double, int> > vector_space_model(set<int>& rel_docs, map<string, i
 	return result_vector;
 }
 
-string get_doc_name(int doc_id) {
-	ifstream file(doc_data_fname);
+int get_doc_length(ifstream& doc_file, int doc_id) {
 	string line;
-	while (doc_id-- > 1) getline(file, line);
-	getline(file, line);
-	file.close();
+	doc_file.seekg((unsigned long long)(doc_id - 1)*(6 + 16 + 4 + 2));
+	getline(doc_file, line);
 
-	return utility::tokenizer(line, '\t')[1];
+	return stoi(line.substr(22, 4));
+}
+
+string get_doc_name(ifstream& doc_file, int doc_id) {
+	string line;
+	doc_file.seekg((unsigned long long)(doc_id - 1)*(6 + 16 + 4 + 2));
+	getline(doc_file, line);
+
+	return line.substr(6, 16);
+}
+
+vector< pair<double, int> > language_model(ifstream& doc_file, ifstream& iindex, set<int>& rel_docs, map<string, int>& query) {
+	map<int, double> dirichlet;
+	double mu = 1200.0;
+	int start, df, doc_id, dqtf, cqtf, D; // D : document length, dqtf : document query term frequency, cqtf : collection query term frequency
+	string line;
+	for (auto& word : query) {
+		if (word_data_table.find(word.first) == word_data_table.end()) continue; // (?)
+		df = word_data_table[word.first].df;
+		start = word_data_table[word.first].start;
+		iindex.seekg((unsigned long long)start*(6 + 6 + 3 + 7 + 2));
+		for (int i = 0; i < df; ++i) {
+			getline(iindex, line);
+			doc_id = stoi(line.substr(6, 6));
+			if (rel_docs.find(doc_id) == rel_docs.end()) continue;
+			dqtf = stoi(line.substr(12, 3));
+			cqtf = word_data_table[word.first].cf;
+			D = get_doc_length(doc_file, doc_id);
+
+			if (dirichlet.find(doc_id) == dirichlet.end()) {
+				dirichlet.insert(make_pair(doc_id,
+					log((dqtf + mu*(cqtf / C)) / (D + mu))));
+			}
+			else {
+				dirichlet[doc_id] +=
+					log((dqtf + mu*(cqtf / C)) / (D + mu));
+			}
+		}
+	}
+	vector<pair<double, int> > result_set;
+	for (auto& res : dirichlet) {
+		result_set.push_back(make_pair(res.second, res.first));
+	}
+	sort(result_set.begin(), result_set.end(), greater<pair<double, int> >());
+	return result_set;
 }
 
 int main(int argc, char* argv[]) {
@@ -569,6 +600,10 @@ int main(int argc, char* argv[]) {
 	ofstream output;
 
 	utility::get_file_paths(TEXT(".\\data"), files);	// Get file paths
+	
+	// Time stamp
+	time_point<system_clock> start, end;
+	start = system_clock::now();
 
 	// Preprocessing
 	if (!if_exists("Term.dat") && !if_exists("Doc.dat")) {
@@ -632,28 +667,64 @@ int main(int argc, char* argv[]) {
 		cout << "Finished Loading Term.dat." << endl;
 	}
 
+	/*
+		Count words in the collection. Used in smoothing. (f(qi, C) = C(qi) / |C|)
+	*/
+	for (auto word : word_data_table) {
+		C += word.second.cf;
+	}
+
+	cout << "Total number of words in the collection (allow duplicates) : " << C << endl << endl;
+
 	// Query Processing
 	map< int, map<string, int> > queries;
 	file.open("topics25.txt");
 	queries = read_query_file(file);
 	file.close();
 
-	// Time Stamp
-	time_point<system_clock> start, end;
-	start = system_clock::now();
-
+	
+	ifstream docu_dat_file(doc_data_fname);
+	ifstream iindex("Index.dat");
 	// Vector Space Model
+	//for (auto &query : queries) {
+	//	set<int> rel_docs = get_relevant_documents(iindex, query.second, query.second.size()/2);
+	//	vector< pair<double, int> > result = vector_space_model(iindex, rel_docs, query.second);
+
+	//	// Print Vector Space Model Results in a relevance order.
+	//	cout << "topicnum : " << query.first << endl;
+	//	int cnt = 5;
+	//	for (auto text : query.second) {
+	//		if (cnt-- == 0) break;
+	//		cout << text.first << " ";
+	//	}
+	//	if (query.second.size() > 5) cout << "..." << endl;
+	//	for (auto &res : result) {
+	//		cout << get_doc_name(docu_dat_file, res.second) << "\t" << res.first << endl;
+	//	}
+	//	cout << endl;
+	//}
+
+	// Language Model (Dirichlet Smoothing)
 	for (auto &query : queries) {
-		set<int> rel_docs = get_relevant_documents(query.second, query.second.size()/3);
-		
-		vector< pair<double, int> > result = vector_space_model(rel_docs, query.second);
+		set<int> rel_docs = get_relevant_documents(iindex, query.second, 1);
+		vector< pair<double, int> > result = language_model(docu_dat_file, iindex, rel_docs, query.second);
 
 		// Print Vector Space Model Results in a relevance order.
+		cout << "topicnum : " << query.first << endl;
+		int cnt = 5;
+		for (auto text : query.second) {
+			if (cnt-- == 0) break;
+			cout << text.first << " ";
+		}
+		if (query.second.size() > 5) cout << "..." << endl;
 		for (auto &res : result) {
-			cout << query.first << "\t" << get_doc_name(res.second) << endl;
+			cout << get_doc_name(docu_dat_file, res.second) << "\t" << res.first << endl;
 		}
 		cout << endl;
 	}
+
+	iindex.close();
+	docu_dat_file.close();
 
 	end = system_clock::now();
 	duration<double> elapsed_seconds = end - start;
