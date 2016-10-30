@@ -568,10 +568,6 @@ int main(int argc, char* argv[]) {
 	ofstream data_file;
 	ofstream output;
 
-	// Time Stamp
-	time_point<system_clock> start, end;
-	start = system_clock::now();
-
 	utility::get_file_paths(TEXT(".\\data"), files);	// Get file paths
 
 	// Preprocessing
@@ -642,16 +638,19 @@ int main(int argc, char* argv[]) {
 	queries = read_query_file(file);
 	file.close();
 
+	// Time Stamp
+	time_point<system_clock> start, end;
+	start = system_clock::now();
+
 	// Vector Space Model
 	for (auto &query : queries) {
-		set<int> rel_docs = get_relevant_documents(query.second, 1);
+		set<int> rel_docs = get_relevant_documents(query.second, query.second.size()/3);
 		
 		vector< pair<double, int> > result = vector_space_model(rel_docs, query.second);
 
 		// Print Vector Space Model Results in a relevance order.
-		cout << "Query number : " << query.first << endl;
 		for (auto &res : result) {
-			cout << res.first << "\t" << get_doc_name(res.second) << endl;
+			cout << query.first << "\t" << get_doc_name(res.second) << endl;
 		}
 		cout << endl;
 	}
