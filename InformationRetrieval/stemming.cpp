@@ -467,12 +467,16 @@ map< int, map<string, int> > read_query_file(ifstream& file) {
 	return queries;
 }
 
-set<int> get_relevant_documents(ifstream& iindex, map<string, int>& Q, int n) {
-	int id, df, start;
+/*
+	Relevant documents should contain at least n query terms of which the TF in that document is same or greater than k and TF in the query >= qk.
+*/
+set<int> get_relevant_documents(ifstream& iindex, map<string, int>& Q, int n, int k, int qk) {
+	int id, df, start, tf;
 	map<int, int> doc_freq_map;
 	set<int> rel_docs;
 	string line;
 	for (auto q : Q) {
+		if (q.second < qk) continue;
 		if (word_data_table.find(q.first) == word_data_table.end()) continue;
 		df = word_data_table[q.first].df;
 		start = word_data_table[q.first].start;
@@ -480,6 +484,8 @@ set<int> get_relevant_documents(ifstream& iindex, map<string, int>& Q, int n) {
 		for (int i = 0; i < df; ++i) {
 			getline(iindex, line);
 			id = stoi(line.substr(6, 6));
+			tf = stoi(line.substr(12, 3));
+			if (tf < k) continue;
 			if (doc_freq_map.find(id) == doc_freq_map.end()) {
 				doc_freq_map[id] = 1;
 			}
@@ -553,7 +559,7 @@ string get_doc_name(ifstream& doc_file, int doc_id) {
 
 vector< pair<double, int> > language_model(ifstream& doc_file, ifstream& iindex, set<int>& rel_docs, map<string, int>& query) {
 	map<int, double> dirichlet;
-	double mu = 1200.0;
+	double mu = 1500.0;
 	int start, df, doc_id, dqtf, cqtf, D; // D : document length, dqtf : document query term frequency, cqtf : collection query term frequency
 	string line;
 	for (auto& word : query) {
@@ -585,6 +591,72 @@ vector< pair<double, int> > language_model(ifstream& doc_file, ifstream& iindex,
 	}
 	sort(result_set.begin(), result_set.end(), greater<pair<double, int> >());
 	return result_set;
+}
+
+void evaluation() {
+	map<int, set<string>> answer_set;
+	map<int, set<string>> my_answer;
+	ifstream answer("relevant_document.txt");
+	ifstream myanswer("result.txt");
+	string line;
+	int id;
+	
+	while (getline(answer, line)) {
+		vector<string> tokens = utility::tokenizer(line, '\t');
+		id = stoi(tokens[0]);
+		if (answer_set.find(id) == answer_set.end()) {
+			set<string> docs;
+			answer_set.insert(make_pair(id, docs));
+		} else {
+			answer_set[id].insert(tokens[1]);
+		}
+	}
+
+	answer.close();
+
+	while (getline(myanswer, line)) {
+		vector<string> tokens = utility::tokenizer(line, '\t');
+		id = stoi(tokens[0]);
+		if (my_answer.find(id) == my_answer.end()) {
+			set<string> docs;
+			my_answer.insert(make_pair(id, docs));
+		}
+		else {
+			my_answer[id].insert(tokens[1]);
+		}
+	}
+	
+	myanswer.close();
+
+	// Compare
+	int TP;
+	int total;
+	for (auto &myans : my_answer) {
+		TP = 0;
+		total = answer_set[myans.first].size();
+		for (auto &mydoc : myans.second) {
+			if (answer_set[myans.first].find(mydoc) != answer_set[myans.first].end()) TP++;
+		}
+		cout << "For query num : " << myans.first << endl;
+		cout << "recall = " << TP / total << endl;
+		cout << "precision = " << TP / myans.second.size() << endl << endl;
+	}
+}
+
+void print_final_result(ifstream& docu_dat_file, vector<pair<double, int>>& result, 
+	map<string, int>& query, int queryNum, ofstream& outfile) {
+	outfile << "topicnum : " << queryNum << endl;
+	int cnt = 5;
+	for (auto& text : query) {
+		if (cnt-- == 0) break;
+		outfile << text.first << " ";
+	}
+	if (query.size() > 5) outfile << "..." << endl;
+
+	for (auto &res : result) {
+		outfile << get_doc_name(docu_dat_file, res.second) << "\t" << res.first << endl;
+	}
+	outfile << endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -624,7 +696,7 @@ int main(int argc, char* argv[]) {
 		}
 		cout << "문서 정보 파일 생성 완료" << endl << endl;
 		/*
-		Freeing memory.
+			Freeing memory.
 		*/
 		data_file.close();
 		output.close();
@@ -686,42 +758,36 @@ int main(int argc, char* argv[]) {
 	ifstream docu_dat_file(doc_data_fname);
 	ifstream iindex("Index.dat");
 	// Vector Space Model
-	//for (auto &query : queries) {
-	//	set<int> rel_docs = get_relevant_documents(iindex, query.second, query.second.size()/2);
-	//	vector< pair<double, int> > result = vector_space_model(iindex, rel_docs, query.second);
+	for (auto &query : queries) {
+		set<int> rel_docs = get_relevant_documents(iindex, query.second, 2, 4, 3);
+		vector< pair<double, int> > result = vector_space_model(iindex, rel_docs, query.second);
 
-	//	// Print Vector Space Model Results in a relevance order.
-	//	cout << "topicnum : " << query.first << endl;
-	//	int cnt = 5;
-	//	for (auto text : query.second) {
-	//		if (cnt-- == 0) break;
-	//		cout << text.first << " ";
-	//	}
-	//	if (query.second.size() > 5) cout << "..." << endl;
-	//	for (auto &res : result) {
-	//		cout << get_doc_name(docu_dat_file, res.second) << "\t" << res.first << endl;
-	//	}
-	//	cout << endl;
-	//}
+		// Print Vector Space Model Results in a relevance order.
+		ofstream outfile("result_vsm.txt");
+		print_final_result(docu_dat_file, result, query.second, query.first, outfile);
+		outfile.close();
+		//print_test_result(query, result);
+	}
 
 	// Language Model (Dirichlet Smoothing)
 	for (auto &query : queries) {
-		set<int> rel_docs = get_relevant_documents(iindex, query.second, 1);
+		set<int> rel_docs = get_relevant_documents(iindex, query.second, 2, 4, 3);
 		vector< pair<double, int> > result = language_model(docu_dat_file, iindex, rel_docs, query.second);
 
 		// Print Vector Space Model Results in a relevance order.
-		cout << "topicnum : " << query.first << endl;
-		int cnt = 5;
-		for (auto text : query.second) {
-			if (cnt-- == 0) break;
-			cout << text.first << " ";
-		}
-		if (query.second.size() > 5) cout << "..." << endl;
-		for (auto &res : result) {
-			cout << get_doc_name(docu_dat_file, res.second) << "\t" << res.first << endl;
-		}
-		cout << endl;
+		ofstream outfile("result_lm.txt");
+		print_final_result(docu_dat_file, result, query.second, query.first, outfile);
+		outfile.close();
+		//print_test_result(query, result);
 	}
+
+	// TEST CODE
+	/*for (auto &query : queries) {
+		cout << query.first << endl;
+		for (auto &test : query.second) {
+			cout << test.first << " " << test.second << endl;
+		}
+	}*/
 
 	iindex.close();
 	docu_dat_file.close();
