@@ -35,7 +35,10 @@ const string TAG_TEXT = "<TEXT>";
 const string TAG_TEXT_END = "</TEXT>";
 
 // File names
-const char* stopword_fname = "stopwords";
+
+// Tuning part 1. Stopwords
+//const char* stopword_fname = "stopwords";
+const char* stopword_fname = "stopwordsV2";
 const char* stemmed_fname = "TF.txt";
 const char* doc_data_fname = "Doc.dat";
 const char* word_data_fname = "Term.dat";
@@ -484,7 +487,7 @@ set<int> get_relevant_documents(ifstream& iindex, map<string, int>& Q, int n, in
 		for (int i = 0; i < df; ++i) {
 			getline(iindex, line);
 			id = stoi(line.substr(6, 6));
-			tf = stoi(line.substr(12, 3));
+			//tf = stoi(line.substr(12, 3));
 			if (tf < k) continue;
 			if (doc_freq_map.find(id) == doc_freq_map.end()) {
 				doc_freq_map[id] = 1;
@@ -495,10 +498,49 @@ set<int> get_relevant_documents(ifstream& iindex, map<string, int>& Q, int n, in
 		}
 	}
 
+	vector<pair<int, int>> result_sorted;
 	for (auto x : doc_freq_map) {
-		if (x.second >= n) {
-			rel_docs.insert(x.first);
+		result_sorted.push_back(make_pair(x.second, x.first));
+	}
+	sort(result_sorted.begin(), result_sorted.end(), greater<pair<double, int>>());
+	vector<pair<int, int>>::const_iterator it = result_sorted.begin();
+	for (int i = 0; i < 1000 && it != result_sorted.end(); ++i, ++it) {
+		if (it->first >= n) rel_docs.insert(it->second);
+	}
+	return rel_docs;
+}
+
+set<int> get_relevant_documents(ifstream& iindex, map<string, int>& Q) {
+	int id, df, start, tf;
+	map<int, int> doc_freq_map;
+	set<int> rel_docs;
+	string line;
+	for (auto q : Q) {
+		if (word_data_table.find(q.first) == word_data_table.end()) continue;
+		df = word_data_table[q.first].df;
+		start = word_data_table[q.first].start;
+		iindex.seekg((unsigned long long)start*(6 + 6 + 3 + 7 + 2), iindex.beg);
+		for (int i = 0; i < df; ++i) {
+			getline(iindex, line);
+			id = stoi(line.substr(6, 6));
+			tf = stoi(line.substr(12, 3));
+			if (doc_freq_map.find(id) == doc_freq_map.end()) {
+				doc_freq_map[id] = 1;
+			}
+			else {
+				doc_freq_map[id] += 1;
+			}
 		}
+	}
+	
+	vector<pair<int, int>> result_sorted;
+	for (auto x : doc_freq_map) {
+		result_sorted.push_back(make_pair(x.second, x.first));
+	}
+	sort(result_sorted.begin(), result_sorted.end(), greater<pair<double, int>>());
+	vector<pair<int, int>>::const_iterator it = result_sorted.begin();
+	for (int i = 0; i < 1000 && it != result_sorted.end(); ++i, ++it) {
+		rel_docs.insert(it->second);
 	}
 	return rel_docs;
 }
@@ -511,7 +553,6 @@ vector< pair<double, int> > vector_space_model(ifstream& iindex, set<int>& rel_d
 	int df, doc_id, start;
 	double weight;
 
-	bool test = false;
 	for (auto &word : query) {
 		if (word_data_table.find(word.first) == word_data_table.end()) continue;
 		df = word_data_table[word.first].df;
@@ -562,8 +603,10 @@ vector< pair<double, int> > language_model(ifstream& doc_file, ifstream& iindex,
 	double mu = 1500.0;
 	int start, df, doc_id, dqtf, cqtf, D; // D : document length, dqtf : document query term frequency, cqtf : collection query term frequency
 	string line;
+	map<int, set<string>> doc_words; // for smoothing
+	map<int, int> doc_length;
 	for (auto& word : query) {
-		if (word_data_table.find(word.first) == word_data_table.end()) continue; // (?)
+		if (word_data_table.find(word.first) == word_data_table.end()) continue;
 		df = word_data_table[word.first].df;
 		start = word_data_table[word.first].start;
 		iindex.seekg((unsigned long long)start*(6 + 6 + 3 + 7 + 2));
@@ -571,25 +614,50 @@ vector< pair<double, int> > language_model(ifstream& doc_file, ifstream& iindex,
 			getline(iindex, line);
 			doc_id = stoi(line.substr(6, 6));
 			if (rel_docs.find(doc_id) == rel_docs.end()) continue;
+			
+			if (doc_words.find(doc_id) == doc_words.end()) {
+				set<string> s;
+				doc_words.insert(make_pair(doc_id, s));
+				doc_words[doc_id].insert(word.first);
+			}
+			else {
+				doc_words[doc_id].insert(word.first);
+			}
+
 			dqtf = stoi(line.substr(12, 3));
 			cqtf = word_data_table[word.first].cf;
-			D = get_doc_length(doc_file, doc_id);
+
+			if (doc_length.find(doc_id) == doc_length.end()) {
+				doc_length[doc_id] = get_doc_length(doc_file, doc_id);
+			}
 
 			if (dirichlet.find(doc_id) == dirichlet.end()) {
 				dirichlet.insert(make_pair(doc_id,
-					log((dqtf + mu*(cqtf / C)) / (D + mu))));
+					log((dqtf + mu*((double)cqtf / C)) / (doc_length[doc_id] + mu))));
 			}
 			else {
 				dirichlet[doc_id] +=
-					log((dqtf + mu*(cqtf / C)) / (D + mu));
+					log((dqtf + mu*((double)cqtf / C)) / (doc_length[doc_id] + mu));
 			}
 		}
 	}
+
+	// Smoothing query words
+	for (auto& d_word : doc_words) {
+		for (auto& q_word : query) {
+			if (word_data_table.find(q_word.first) == word_data_table.end()) continue;
+			if (d_word.second.find(q_word.first) == d_word.second.end()) {
+				dirichlet[d_word.first] +=
+					log((mu * ((double)word_data_table[q_word.first].cf / C)) / (mu + doc_length[d_word.first]));
+			}
+		}
+	}
+
 	vector<pair<double, int> > result_set;
 	for (auto& res : dirichlet) {
 		result_set.push_back(make_pair(res.second, res.first));
 	}
-	sort(result_set.begin(), result_set.end(), greater<pair<double, int> >());
+	sort(result_set.begin(), result_set.end(), greater<pair<double, int>>());
 	return result_set;
 }
 
@@ -599,14 +667,17 @@ void evaluation() {
 	ifstream answer("relevant_document.txt");
 	ifstream myanswer("result.txt");
 	string line;
+	set<string> docs;
+
 	int id;
 	
 	while (getline(answer, line)) {
 		vector<string> tokens = utility::tokenizer(line, '\t');
 		id = stoi(tokens[0]);
 		if (answer_set.find(id) == answer_set.end()) {
-			set<string> docs;
-			answer_set.insert(make_pair(id, docs));
+			answer_set[id].size();
+			answer_set[id] = docs;
+			//answer_set.insert(make_pair(id, docs));
 		} else {
 			answer_set[id].insert(tokens[1]);
 		}
@@ -618,7 +689,8 @@ void evaluation() {
 		vector<string> tokens = utility::tokenizer(line, '\t');
 		id = stoi(tokens[0]);
 		if (my_answer.find(id) == my_answer.end()) {
-			set<string> docs;
+			//my_answer[id].size();
+			cout << my_answer[378].size();
 			my_answer.insert(make_pair(id, docs));
 		}
 		else {
@@ -638,25 +710,24 @@ void evaluation() {
 			if (answer_set[myans.first].find(mydoc) != answer_set[myans.first].end()) TP++;
 		}
 		cout << "For query num : " << myans.first << endl;
-		cout << "recall = " << TP / total << endl;
-		cout << "precision = " << TP / myans.second.size() << endl << endl;
+		cout << "recall = " << ((double)TP / total) * 100 << " %" << endl;
+		cout << "precision = " << ((double)TP / myans.second.size()) * 100 << " %" << endl << endl;
 	}
 }
 
 void print_final_result(ifstream& docu_dat_file, vector<pair<double, int>>& result, 
 	map<string, int>& query, int queryNum, ofstream& outfile) {
-	outfile << "topicnum : " << queryNum << endl;
-	int cnt = 5;
-	for (auto& text : query) {
-		if (cnt-- == 0) break;
-		outfile << text.first << " ";
-	}
-	if (query.size() > 5) outfile << "..." << endl;
-
+	outfile << queryNum << endl;
 	for (auto &res : result) {
-		outfile << get_doc_name(docu_dat_file, res.second) << "\t" << res.first << endl;
+		outfile << get_doc_name(docu_dat_file, res.second) << "\t";
 	}
 	outfile << endl;
+}
+
+void print_test_result(ifstream& docu_dat_file, vector<pair<double, int>>& result, int queryNum, ofstream& outfile) {
+	for (auto &x : result) {
+		outfile << queryNum << '\t' << get_doc_name(docu_dat_file, x.second) << endl;
+	}
 }
 
 int main(int argc, char* argv[]) {
@@ -672,10 +743,6 @@ int main(int argc, char* argv[]) {
 	ofstream output;
 
 	utility::get_file_paths(TEXT(".\\data"), files);	// Get file paths
-	
-	// Time stamp
-	time_point<system_clock> start, end;
-	start = system_clock::now();
 
 	// Preprocessing
 	if (!if_exists("Term.dat") && !if_exists("Doc.dat")) {
@@ -748,48 +815,58 @@ int main(int argc, char* argv[]) {
 
 	cout << "Total number of words in the collection (allow duplicates) : " << C << endl << endl;
 
+	cout << "Processing Queries...";
 	// Query Processing
 	map< int, map<string, int> > queries;
 	file.open("topics25.txt");
 	queries = read_query_file(file);
 	file.close();
 
-	
+	// Print out queries
+	//for (auto& query : queries) {
+	//	cout << query.first << endl;
+	//	for (auto& word : query.second) {
+	//		cout << word.first << " " << word.second << endl;
+	//	}
+	//	cout << endl;
+	//}
+
+	cout << '\t' << "Done. Total : " << queries.size() << endl;
+
+	cout << endl << endl << "Clock start..." << endl;
+	// Time stamp
+	time_point<system_clock> start, end;
+	start = system_clock::now();
+
 	ifstream docu_dat_file(doc_data_fname);
 	ifstream iindex("Index.dat");
-	// Vector Space Model
-	for (auto &query : queries) {
-		set<int> rel_docs = get_relevant_documents(iindex, query.second, 2, 4, 3);
-		vector< pair<double, int> > result = vector_space_model(iindex, rel_docs, query.second);
+	ofstream outfile("result.txt");
 
-		// Print Vector Space Model Results in a relevance order.
-		ofstream outfile("result_vsm.txt");
-		print_final_result(docu_dat_file, result, query.second, query.first, outfile);
-		outfile.close();
-		//print_test_result(query, result);
-	}
+	// Vector Space Model
+	//for (auto &query : queries) {
+	//	set<int> rel_docs = get_relevant_documents(iindex, query.second);
+	//	//set<int> rel_docs = get_relevant_documents(iindex, query.second, 1, 1, 1);
+	//	vector< pair<double, int> > result = vector_space_model(iindex, rel_docs, query.second);
+	//	// Print Vector Space Model Results in a relevance order.
+	//	print_final_result(docu_dat_file, result, query.second, query.first, outfile);
+	//}
+	//outfile.close();
+
+	//cout << "Vector Space Model 완료." << endl;
 
 	// Language Model (Dirichlet Smoothing)
 	for (auto &query : queries) {
-		set<int> rel_docs = get_relevant_documents(iindex, query.second, 2, 4, 3);
+		set<int> rel_docs = get_relevant_documents(iindex, query.second);
+		//set<int> rel_docs = get_relevant_documents(iindex, query.second, 1, 1, 3);
 		vector< pair<double, int> > result = language_model(docu_dat_file, iindex, rel_docs, query.second);
 
-		// Print Vector Space Model Results in a relevance order.
-		ofstream outfile("result_lm.txt");
+		// Print Language Model Results in a relevance order.
 		print_final_result(docu_dat_file, result, query.second, query.first, outfile);
-		outfile.close();
-		//print_test_result(query, result);
 	}
+	outfile.close();
 
-	// TEST CODE
-	/*for (auto &query : queries) {
-		cout << query.first << endl;
-		for (auto &test : query.second) {
-			cout << test.first << " " << test.second << endl;
-		}
-	}*/
+	cout << "Language Model 완료." << endl;
 
-	iindex.close();
 	docu_dat_file.close();
 
 	end = system_clock::now();
