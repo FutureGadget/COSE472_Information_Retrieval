@@ -77,3 +77,53 @@ string utility::format_weight(double weight) {
 	}
 	return str;
 }
+
+// trim from start
+string& utility::ltrim(std::string &s) {
+	s.erase(s.begin(), std::find_if(s.begin(), s.end(),
+		std::not1(std::ptr_fun<int, int>(std::isspace))));
+	return s;
+}
+
+// trim from end
+string& utility::rtrim(std::string &s) {
+	s.erase(std::find_if(s.rbegin(), s.rend(),
+		std::not1(std::ptr_fun<int, int>(std::isspace))).base(), s.end());
+	return s;
+}
+
+// trim from both ends
+string& utility::trim(std::string &s) {
+	return ltrim(rtrim(s));
+}
+
+bool utility::is_valid_char(char c) {
+	if (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '\'') return true;
+	return false;
+}
+
+void utility::tokenize_only_alpha(string& s, vector<string>& tokens) {
+	string tmp;
+	bool is_counting = false;
+	tokens.clear();
+	for (int i = 0; i < s.size(); ++i) {
+		if (!is_counting && is_valid_char(s.at(i))) {
+			if ((i - 1 >= 0 && s.at(i - 1) != '\'' && s.at(i) == '\'' && i + 1 < s.size() && s.at(i + 1) != '\'') || s.at(i) != '\'') {
+				is_counting = true;
+				tmp = s.at(i);
+			}
+		}
+		else if (is_counting && is_valid_char(s.at(i))) {
+			if ((i - 1 >= 0 && s.at(i - 1) != '\'' && s.at(i) == '\'' && i + 1 < s.size() && s.at(i + 1) != '\'') || s.at(i) != '\'') {
+				tmp += s.at(i);
+			}
+		}
+		else if (is_counting && !is_valid_char(s.at(i))) {
+			is_counting = false;
+			tokens.push_back(tmp);
+		}
+	}
+	if (is_counting) {
+		tokens.push_back(tmp);
+	}
+}

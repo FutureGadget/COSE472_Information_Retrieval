@@ -12,6 +12,7 @@
 #include <memory>
 #include <set>
 #include <functional>
+#include <queue>
 
 #include <chrono>
 #include <ctime>
@@ -38,8 +39,8 @@ const string TAG_TEXT_END = "</TEXT>";
 
 // Tuning part 1. Stopwords
 //const char* stopword_fname = "stopwords";
-const char* stopword_fname = "stopwordsV2";
-const char* stemmed_fname = "TF.txt";
+const char* stopword_fname = "stopwordsV4";
+const char* tf_filename = "TF.txt";
 const char* doc_data_fname = "Doc.dat";
 const char* word_data_fname = "Term.dat";
 const char* inverse_data_fname = "index_tmp.dat";
@@ -57,18 +58,26 @@ struct word_info {
 
 struct inverted_index {
 	int word_id;
+	double weight;
 	string data;
 	bool operator<(inverted_index& t) {
-		return (this->word_id < t.word_id);
+		if (this->word_id == t.word_id) {
+			return this->weight > t.weight;
+		}
+		else {
+			return this->word_id < t.word_id;
+		}
 	}
 	inverted_index() {}
-	inverted_index(int word_id, string data) {
+	inverted_index(int word_id, double weight, string data) {
 		this->word_id = word_id;
+		this->weight = weight;
 		this->data = data;
 	}
 };
 
 int doc_count = 0;	// document id (Which means the number of documents)
+int num_total_docs = 0;   // total number of documents. (Collection)
 unsigned long long C; // total number of words in the collection.
 
 /**
@@ -109,62 +118,22 @@ void constructStopWordSet() {
 	}
 
 	// add two letter words to the stopword set
-	string two("aa");
+	/*string two("aa");
 	for (int i = 'a'; i <= 'z'; ++i) {
 		for (int j = 'a'; j <= 'z'; ++j) {
 			two[0] = i;
 			two[1] = j;
 			stopwords.insert(two);
 		}
-	}
+		stopwords.insert(to_string(i));
+	}*/
 }
 
-bool is_valid_char(char c) {
-	if (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '<' || c == '>'
-		|| c >= '0' && c <= '9' || c == '.' || c == '/') return true;
-	return false;
-}
-
-void tokenize_only_alpha(string s, vector<string>& tokens) {
-	string tmp;
-	bool is_counting = false;
-	tokens.clear();
-	for (int i = 0; i < s.size(); ++i) {
-		if (!is_counting && is_valid_char(s.at(i))) {
-			is_counting = true;
-			tmp = s.at(i);
-		}
-		else if (is_counting && is_valid_char(s.at(i))) {
-			tmp += s.at(i);
-		}
-		else if (is_counting && !is_valid_char(s.at(i))) {
-			is_counting = false;
-			tokens.push_back(tmp);
-		}
+inline void create_index_file(ofstream& doc_file, ofstream& tf_file, map<string, int>& tempTF, string docno, int doc_id, int doc_length) {
+	for (auto word : tempTF) {
+		tf_file << doc_id << '\t' << word.first << '\t' << word.second << endl;
 	}
-	if (is_counting) {
-		tokens.push_back(tmp);
-	}
-}
-
-void create_index_file(vector<string>& buffer, ofstream& stem_output, int doc_id) {
-	map<string, int> tf;
-	for (auto word : buffer) {
-		if (word_data_table.find(word) == word_data_table.end()) {
-			word_data_table[word] = word_info();
-		}
-		word_data_table[word].cf++;
-		if (tf.find(word) == tf.end()) {
-			tf[word] = 1;
-			word_data_table[word].df++;
-		}
-		else {
-			tf[word]++;
-		}
-	}
-	for (string word : buffer) {
-		stem_output << doc_id << '\t' << word << '\t' << tf[word] << endl;
-	}
+	doc_file << utility::format_digit(6, doc_id) << docno << utility::format_digit(4, doc_length) << endl;
 }
 
 void create_inverted_index_file(ofstream& iif) {
@@ -179,7 +148,7 @@ void create_inverted_index_file(ofstream& iif) {
 	tokens = utility::tokenizer(line, '\t');
 	doc_id = stoi(tokens[0]);
 	while (1) {
-		tf_idf_word.insert(make_pair(tokens[1], 
+		tf_idf_word.insert(make_pair(tokens[1],
 			make_pair(stoi(tokens[2]), (log(stod(tokens[2])) + 1) * log((double)doc_count / word_data_table[tokens[1]].df))));
 		denominator += tf_idf_word[tokens[1]].second * tf_idf_word[tokens[1]].second;
 		// END OF FILE
@@ -214,85 +183,102 @@ void create_inverted_index_file(ofstream& iif) {
 	index_file.close();
 }
 
+void updateWordInfo(string& word, map<string, int>& tempTF, int weight) {
+	if (word_data_table.find(word) == word_data_table.end()) {
+		word_data_table[word] = word_info();
+	}
+	if (tempTF.find(word) == tempTF.end()) {
+		tempTF[word] = weight;
+		word_data_table[word].df++;
+	}
+	else {
+		tempTF[word] += weight;
+	}
+	word_data_table[word].cf++;
+}
 
-void fast_parse(ifstream& file, ofstream& doc_data, ofstream& stem_output) {
-	string line;
+void text_transform(string& line, map<string, int>& tempTF, int weight, int &doc_length) {
 	vector<string> tokens;
-	document* doc = NULL;
-	multiset<string> found_in_the_current_doc; // To count the document length. Should be cleared per docs.
-	vector<string> buffer;
+	utility::tokenize_only_alpha(line, tokens);
+	for (auto& token : tokens) {
+		Porter2Stemmer::trim(token);
+		if (stopwords.find(token) != stopwords.end()) continue;
+		Porter2Stemmer::stem(token);
+		if (token != "" && stopwords.find(token) == stopwords.end()) {
+			doc_length++;
+			updateWordInfo(token, tempTF, weight);
+		}
+	}
+}
 
-	bool docno, head, text, is_parsing_docno, is_parsing_head, is_parsing_text;
+void fast_parse(ifstream& file, ofstream& doc_file, ofstream& tf_file) {
+	string line;
+	vector<string> only_alpha_tokens;
+	map<string, int> tempTF;
+	int fidx, doc_length = 0;
+	string docno, tmp;
 	while (getline(file, line)) {
-		tokenize_only_alpha(line, tokens);
-		for (string word : tokens) {
-			if (word == "<DOC>") {
-				/*
-					Initialization code
-				*/
-				doc = new document();
-				doc_count = doc_count + 1;		  // increase doc_count
-				docno = head = text = false;
-				is_parsing_docno = is_parsing_head = is_parsing_text = false;
-			}
-			else if (word == "</DOC>") {
-				// Write to the document data file
-				doc_data << utility::format_digit(6,doc_count) << doc->docno << utility::format_digit(4,found_in_the_current_doc.size()) << endl;
-				//write_stemmed_document(buffer, stem_output);
-				create_index_file(buffer, stem_output, doc_count);
-				/*
-					initialize
-				*/
-				buffer.clear();
-				found_in_the_current_doc.clear(); // Clear the multi set to store words for the new documents.
-				delete(doc);
-			}
-			else {
-				if (!docno && word == TAG_DOCNO) {
-					is_parsing_docno = true;
-				}
-				else if (!head && word == TAG_HEADLINE) {
-					is_parsing_head = true;
-				}
-				else if (!text && word == TAG_TEXT) {
-					is_parsing_text = true;
-				}
-				else if (!docno && is_parsing_docno && word == TAG_DOCNO_END) {
-					docno = true;
-					is_parsing_docno = false;
-				}
-				else if (!head && is_parsing_head && word == TAG_HEADLINE_END) {
-					head = true;
-					is_parsing_head = false;
-				}
-				else if (!text && is_parsing_text && word == TAG_TEXT_END) {
-					text = true;
-					is_parsing_text = false;
-				}
-				else if (is_parsing_docno) {
-					doc->docno = word;
-				}
-				else if (is_parsing_head) {
-					Porter2Stemmer::trim(word);
-					if (word != "" && stopwords.find(word) == stopwords.end()) {
-						Porter2Stemmer::stem(word);	// stem
-						if (word != "" && stopwords.find(word) == stopwords.end()) {
-							buffer.push_back(word);
-							found_in_the_current_doc.insert(word);
+		if (line == "<DOC>") {
+			doc_count = doc_count + 1;
+			getline(file, line);
+			while (line != "</DOC>") {
+				if ((fidx = line.find("<DOCNO>") != string::npos)) {
+					docno = line.substr(fidx + 6, line.size() - 7 - 8 - 1);
+					utility::trim(docno);
+					getline(file, line);
+				} else if (line == "<HEADLINE>") {
+					getline(file, line);
+					while (line != "</HEADLINE>") {
+						// Parse HEADLINE
+						text_transform(line, tempTF, 5, doc_length);
+						getline(file, line);
+					}
+
+				} else if ((fidx = line.find("<HEADLINE>")) != string::npos) {
+					tmp = line.substr(fidx + 11, line.size() - 10 - 11);
+					utility::trim(tmp);
+					text_transform(tmp, tempTF, 5, doc_length);
+					getline(file, line);
+				} else if (line == "<TEXT>") {
+					getline(file, line);
+					while (line != "</TEXT>") {
+						if (line == "<P>") {
+							getline(file, line);
+							while (line != "</P>") {
+								// Parse Paragraph
+								text_transform(line, tempTF, 1, doc_length);
+								getline(file, line);
+							}
+						}
+						else if (line == "<SUBHEAD>") {
+							getline(file, line);
+							while (line == "</SUBHEAD>") {
+								// Parse SUBHEAD
+								text_transform(line, tempTF, 3, doc_length);
+								getline(file, line);
+							}
+						}
+						else if (line[0] != '<') { // contents without a <P> tag
+							text_transform(line, tempTF, 1, doc_length);
+							getline(file, line);
+						}
+						else {
+							getline(file, line);
 						}
 					}
 				}
-				else if (is_parsing_text) {
-					Porter2Stemmer::trim(word);
-					if (word != "" && stopwords.find(word) == stopwords.end()) {
-						Porter2Stemmer::stem(word);	// stem
-						if (word != "" && stopwords.find(word) == stopwords.end()) {
-							buffer.push_back(word);
-							found_in_the_current_doc.insert(word);
-						}
-					}
+				else if (line[0] != '<') {
+					text_transform(line, tempTF, 3, doc_length);
+					getline(file, line);
 				}
-			}
+				else {
+					getline(file, line);
+				}
+			} // END OF DOC
+			// Write TF.txt
+			create_index_file(doc_file, tf_file, tempTF, docno, doc_count, doc_length);
+			doc_length = 0;
+			tempTF.clear();
 		}
 	}
 }
@@ -302,6 +288,7 @@ string merge(int first, int last) {
 	ofstream res_file;
 	string f1, f2, f3, line1, line2;
 	int a, b;
+	double w1, w2;
 	TCHAR t1[MAX_PATH], t2[MAX_PATH];
 	if (first < last) {
 		int mid = (first + last) / 2;
@@ -326,18 +313,30 @@ string merge(int first, int last) {
 			}
 			else if (file2.eof()) {
 				res_file << line1 << endl;
-				getline(file2, line2);
+				getline(file1, line1);
 			}
 			else {
 				a = stoi(line1.substr(0, 6));
+				w1 = stod(line1.substr(15, 7));
 				b = stoi(line2.substr(0, 6));
+				w2 = stod(line2.substr(15, 7));
 				if (a < b) {
 					res_file << line1 << endl;
 					getline(file1, line1);
 				}
-				else {
+				else if (a > b){
 					res_file << line2 << endl;
 					getline(file2, line2);
+				}
+				else if (a == b) {
+					if (w1 > w2) {
+						res_file << line1 << endl;
+						getline(file1, line1);
+					}
+					else {
+						res_file << line2 << endl;
+						getline(file2, line2);
+					}
 				}
 			}
 		}
@@ -370,26 +369,26 @@ void external_merge_sort(ifstream& pre_file) {
 	// PASS 1
 	while (getline(pre_file, line)) {
 		if (cnt < 1500000) {
-			local.push_back(inverted_index(stoi(line.substr(0, 6)), line.substr(6, string::npos)));
+			local.push_back(inverted_index(stoi(line.substr(0, 6)), stod(line.substr(15, 7)), line.substr(6, 9)));
 			++cnt;
 		}
 		else {
 			sort(local.begin(), local.end());
 			out.open(to_string(file_cnt));
 			for (int i = 0; i < local.size(); ++i) {
-				out << utility::format_digit(6, local[i].word_id) << local[i].data << endl;
+				out << utility::format_digit(6, local[i].word_id) << local[i].data << utility::format_weight(local[i].weight) << endl;
 			}
 			out.close();
 			local.clear();
 			++file_cnt;
 			cnt = 1;
-			local.push_back(inverted_index(stoi(line.substr(0, 6)), line.substr(6, string::npos)));
+			local.push_back(inverted_index(stoi(line.substr(0, 6)), stod(line.substr(15, 7)), line.substr(6, 9)));
 		}
 	}
 	out.open(to_string(file_cnt));
 	sort(local.begin(), local.end());
 	for (int i = 0; i < local.size(); ++i) {
-		out << utility::format_digit(6, local[i].word_id) << local[i].data << endl;
+		out << utility::format_digit(6, local[i].word_id) << local[i].data << utility::format_weight(local[i].weight) << endl;
 	}
 	++file_cnt;
 	out.close();
@@ -424,19 +423,20 @@ void load_term_file(ifstream& file) {
 	}
 }
 
-void process_query_word(string& word, map<string, int>& Q) {
+void process_query_word(string& word, map<string, int>& Q, int weight) {
 	Porter2Stemmer::trim(word);
 	if (stopwords.find(word) != stopwords.end()) return;
 	else {
 		Porter2Stemmer::stem(word);
+		if (word_data_table.find(word) == word_data_table.end()) return;
 		if (stopwords.find(word) != stopwords.end() || word == "") return;
 		else {
 			// Query weight is calculated by its term frequency.
 			if (Q.find(word) == Q.end()) {
-				Q[word] = 1;
+				Q[word] = weight;
 			}
 			else {
-				Q[word]++;
+				Q[word] += weight;
 			}
 		}
 	}
@@ -447,98 +447,85 @@ void process_query_word(string& word, map<string, int>& Q) {
 	2. Count query term frequency to calculate qi in the vector space model.
 	@returns queries
 */
-map< int, map<string, int> > read_query_file(ifstream& file) {
+map<int, map<string, int>> read_query_file(ifstream& file) {
 	string line;
-	map<int, map<string, int> > queries;
+	map<int, map<string, int>> queries;
 	map<string, int> query;
 	vector<string> tokens;
+	vector<string> sp_char_removed;
 	int query_num;
 	while (getline(file, line)) {
 		tokens = utility::tokenizer(line, ' ');
 		if (tokens.size() == 0) continue;
-		else if (tokens[0] == "<top>" || tokens[0] == "</top>") continue;
+		else if (tokens[0] == "<top>") continue; 
+		else if (tokens[0] == "</top>") continue;
 		else if (tokens[0] == "<num>") {
 			query_num = stoi(tokens[2]);
 			queries.insert(make_pair(query_num, query));
 		}
-		else if (tokens[0] == "<title>") { for (int i = 1; i < tokens.size(); ++i) process_query_word(tokens[i], queries[query_num]); }
+		else if (tokens[0] == "<title>") {
+			for (int i = 1; i < tokens.size(); ++i) {
+				utility::tokenize_only_alpha(tokens[i], sp_char_removed);
+				for (auto& word : sp_char_removed) {
+					process_query_word(word, queries[query_num], 5);
+				}
+			}
+		}
 		else if (tokens[0] == "<desc>") { continue; }
 		else if (tokens[0] == "<narr>") { continue; }
-		else
-			for (auto s : tokens) { process_query_word(s, queries[query_num]); };
+		else {
+			for (auto s : tokens) {
+				utility::tokenize_only_alpha(s, sp_char_removed);
+				for (auto& word : sp_char_removed) {
+					process_query_word(word, queries[query_num], 1);
+				}
+			}
+		}
 	}
 	return queries;
 }
 
-/*
-	Relevant documents should contain at least n query terms of which the TF in that document is same or greater than k and TF in the query >= qk.
-*/
-set<int> get_relevant_documents(ifstream& iindex, map<string, int>& Q, int n, int k, int qk) {
-	int id, df, start, tf;
-	map<int, int> doc_freq_map;
-	set<int> rel_docs;
+int get_doc_length(ifstream& doc_file, int doc_id) {
 	string line;
-	for (auto q : Q) {
-		if (q.second < qk) continue;
-		if (word_data_table.find(q.first) == word_data_table.end()) continue;
-		df = word_data_table[q.first].df;
-		start = word_data_table[q.first].start;
-		iindex.seekg((unsigned long long)start*(6 + 6 + 3 + 7 + 2), iindex.beg);
-		for (int i = 0; i < df; ++i) {
-			getline(iindex, line);
-			id = stoi(line.substr(6, 6));
-			//tf = stoi(line.substr(12, 3));
-			if (tf < k) continue;
-			if (doc_freq_map.find(id) == doc_freq_map.end()) {
-				doc_freq_map[id] = 1;
-			}
-			else {
-				doc_freq_map[id]++;
-			}
-		}
-	}
+	doc_file.seekg((unsigned long long)(doc_id - 1)*(6 + 16 + 4 + 2));
+	getline(doc_file, line);
 
-	vector<pair<int, int>> result_sorted;
-	for (auto x : doc_freq_map) {
-		result_sorted.push_back(make_pair(x.second, x.first));
-	}
-	sort(result_sorted.begin(), result_sorted.end(), greater<pair<double, int>>());
-	vector<pair<int, int>>::const_iterator it = result_sorted.begin();
-	for (int i = 0; i < 1000 && it != result_sorted.end(); ++i, ++it) {
-		if (it->first >= n) rel_docs.insert(it->second);
-	}
-	return rel_docs;
+	return stoi(line.substr(22, 4));
 }
 
-set<int> get_relevant_documents(ifstream& iindex, map<string, int>& Q) {
-	int id, df, start, tf;
-	map<int, int> doc_freq_map;
+set<int> get_relevant_documents(ifstream& iindex,
+								map<string, int>& Q, 
+								map<string, map<int, pair<int, double>>>& iiinfo)
+{
+	int id, df, tf, start;
+	map<int, long double> doc_freq_map;
 	set<int> rel_docs;
 	string line;
-	for (auto q : Q) {
-		if (word_data_table.find(q.first) == word_data_table.end()) continue;
+	double weight;
+	for (auto& q : Q) {
 		df = word_data_table[q.first].df;
 		start = word_data_table[q.first].start;
 		iindex.seekg((unsigned long long)start*(6 + 6 + 3 + 7 + 2), iindex.beg);
+		if (df > 30000) df = 10000;
 		for (int i = 0; i < df; ++i) {
 			getline(iindex, line);
 			id = stoi(line.substr(6, 6));
 			tf = stoi(line.substr(12, 3));
-			if (doc_freq_map.find(id) == doc_freq_map.end()) {
-				doc_freq_map[id] = 1;
+			weight = stod(line.substr(15, 7));
+			if (iiinfo.find(q.first) == iiinfo.end()) {
+				map<int, pair<int,double>> doc_weight;
+				iiinfo.insert(make_pair(q.first, doc_weight));
 			}
-			else {
-				doc_freq_map[id] += 1;
-			}
+			iiinfo[q.first][id] = make_pair(tf, weight);
+			doc_freq_map[id] += (double)q.second * q.second / Q.size() * weight;
 		}
 	}
-	
-	vector<pair<int, int>> result_sorted;
+	vector<pair<double, int>> result_sorted;
 	for (auto x : doc_freq_map) {
 		result_sorted.push_back(make_pair(x.second, x.first));
 	}
 	sort(result_sorted.begin(), result_sorted.end(), greater<pair<double, int>>());
-	vector<pair<int, int>>::const_iterator it = result_sorted.begin();
+	vector<pair<double, int>>::const_iterator it = result_sorted.begin();
 	for (int i = 0; i < 1000 && it != result_sorted.end(); ++i, ++it) {
 		rel_docs.insert(it->second);
 	}
@@ -554,7 +541,6 @@ vector< pair<double, int> > vector_space_model(ifstream& iindex, set<int>& rel_d
 	double weight;
 
 	for (auto &word : query) {
-		if (word_data_table.find(word.first) == word_data_table.end()) continue;
 		df = word_data_table[word.first].df;
 		start = word_data_table[word.first].start;
 		iindex.seekg((unsigned long long)start*(6 + 6 + 3 + 7 + 2), iindex.beg);
@@ -582,14 +568,6 @@ vector< pair<double, int> > vector_space_model(ifstream& iindex, set<int>& rel_d
 	return result_vector;
 }
 
-int get_doc_length(ifstream& doc_file, int doc_id) {
-	string line;
-	doc_file.seekg((unsigned long long)(doc_id - 1)*(6 + 16 + 4 + 2));
-	getline(doc_file, line);
-
-	return stoi(line.substr(22, 4));
-}
-
 string get_doc_name(ifstream& doc_file, int doc_id) {
 	string line;
 	doc_file.seekg((unsigned long long)(doc_id - 1)*(6 + 16 + 4 + 2));
@@ -598,62 +576,27 @@ string get_doc_name(ifstream& doc_file, int doc_id) {
 	return line.substr(6, 16);
 }
 
-vector< pair<double, int> > language_model(ifstream& doc_file, ifstream& iindex, set<int>& rel_docs, map<string, int>& query) {
+vector<pair<double, int>> language_model(ifstream& doc_file, set<int>& rel_docs, map<string, int>& query, map<string, map<int, pair<int, double>>>& iindex_mem) {
 	map<int, double> dirichlet;
-	double mu = 1500.0;
-	int start, df, doc_id, dqtf, cqtf, D; // D : document length, dqtf : document query term frequency, cqtf : collection query term frequency
-	string line;
-	map<int, set<string>> doc_words; // for smoothing
 	map<int, int> doc_length;
-	for (auto& word : query) {
-		if (word_data_table.find(word.first) == word_data_table.end()) continue;
-		df = word_data_table[word.first].df;
-		start = word_data_table[word.first].start;
-		iindex.seekg((unsigned long long)start*(6 + 6 + 3 + 7 + 2));
-		for (int i = 0; i < df; ++i) {
-			getline(iindex, line);
-			doc_id = stoi(line.substr(6, 6));
-			if (rel_docs.find(doc_id) == rel_docs.end()) continue;
-			
-			if (doc_words.find(doc_id) == doc_words.end()) {
-				set<string> s;
-				doc_words.insert(make_pair(doc_id, s));
-				doc_words[doc_id].insert(word.first);
+	long double mu = 2000;
+
+	for (auto& doc_id : rel_docs) {
+		// Get document's length from the Doc.dat file and store in on the memory.
+		doc_length[doc_id] = get_doc_length(doc_file, doc_id);
+		for (auto& qword : query) {
+			// If the query word is not in the document,
+			if (iindex_mem[qword.first].find(doc_id) == iindex_mem[qword.first].end()) {
+				dirichlet[doc_id] += log((mu * word_data_table[qword.first].cf / C) / (mu + doc_length[doc_id]));
 			}
 			else {
-				doc_words[doc_id].insert(word.first);
-			}
-
-			dqtf = stoi(line.substr(12, 3));
-			cqtf = word_data_table[word.first].cf;
-
-			if (doc_length.find(doc_id) == doc_length.end()) {
-				doc_length[doc_id] = get_doc_length(doc_file, doc_id);
-			}
-
-			if (dirichlet.find(doc_id) == dirichlet.end()) {
-				dirichlet.insert(make_pair(doc_id,
-					log((dqtf + mu*((double)cqtf / C)) / (doc_length[doc_id] + mu))));
-			}
-			else {
-				dirichlet[doc_id] +=
-					log((dqtf + mu*((double)cqtf / C)) / (doc_length[doc_id] + mu));
+				// If the query word is in the document,
+				dirichlet[doc_id] += log((iindex_mem[qword.first][doc_id].first + mu * word_data_table[qword.first].cf / C) / (mu + doc_length[doc_id]));
 			}
 		}
 	}
 
-	// Smoothing query words
-	for (auto& d_word : doc_words) {
-		for (auto& q_word : query) {
-			if (word_data_table.find(q_word.first) == word_data_table.end()) continue;
-			if (d_word.second.find(q_word.first) == d_word.second.end()) {
-				dirichlet[d_word.first] +=
-					log((mu * ((double)word_data_table[q_word.first].cf / C)) / (mu + doc_length[d_word.first]));
-			}
-		}
-	}
-
-	vector<pair<double, int> > result_set;
+	vector<pair<double, int>> result_set;
 	for (auto& res : dirichlet) {
 		result_set.push_back(make_pair(res.second, res.first));
 	}
@@ -661,73 +604,13 @@ vector< pair<double, int> > language_model(ifstream& doc_file, ifstream& iindex,
 	return result_set;
 }
 
-void evaluation() {
-	map<int, set<string>> answer_set;
-	map<int, set<string>> my_answer;
-	ifstream answer("relevant_document.txt");
-	ifstream myanswer("result.txt");
-	string line;
-	set<string> docs;
-
-	int id;
-	
-	while (getline(answer, line)) {
-		vector<string> tokens = utility::tokenizer(line, '\t');
-		id = stoi(tokens[0]);
-		if (answer_set.find(id) == answer_set.end()) {
-			answer_set[id].size();
-			answer_set[id] = docs;
-			//answer_set.insert(make_pair(id, docs));
-		} else {
-			answer_set[id].insert(tokens[1]);
-		}
-	}
-
-	answer.close();
-
-	while (getline(myanswer, line)) {
-		vector<string> tokens = utility::tokenizer(line, '\t');
-		id = stoi(tokens[0]);
-		if (my_answer.find(id) == my_answer.end()) {
-			//my_answer[id].size();
-			cout << my_answer[378].size();
-			my_answer.insert(make_pair(id, docs));
-		}
-		else {
-			my_answer[id].insert(tokens[1]);
-		}
-	}
-	
-	myanswer.close();
-
-	// Compare
-	int TP;
-	int total;
-	for (auto &myans : my_answer) {
-		TP = 0;
-		total = answer_set[myans.first].size();
-		for (auto &mydoc : myans.second) {
-			if (answer_set[myans.first].find(mydoc) != answer_set[myans.first].end()) TP++;
-		}
-		cout << "For query num : " << myans.first << endl;
-		cout << "recall = " << ((double)TP / total) * 100 << " %" << endl;
-		cout << "precision = " << ((double)TP / myans.second.size()) * 100 << " %" << endl << endl;
-	}
-}
-
-void print_final_result(ifstream& docu_dat_file, vector<pair<double, int>>& result, 
+void print_result(ifstream& docu_dat_file, vector<pair<double, int>>& result,
 	map<string, int>& query, int queryNum, ofstream& outfile) {
 	outfile << queryNum << endl;
 	for (auto &res : result) {
 		outfile << get_doc_name(docu_dat_file, res.second) << "\t";
 	}
 	outfile << endl;
-}
-
-void print_test_result(ifstream& docu_dat_file, vector<pair<double, int>>& result, int queryNum, ofstream& outfile) {
-	for (auto &x : result) {
-		outfile << queryNum << '\t' << get_doc_name(docu_dat_file, x.second) << endl;
-	}
 }
 
 int main(int argc, char* argv[]) {
@@ -748,7 +631,7 @@ int main(int argc, char* argv[]) {
 	if (!if_exists("Term.dat") && !if_exists("Doc.dat")) {
 		// Open all files, do parsing, stemming, and index creation
 		data_file.open(doc_data_fname);
-		output.open(stemmed_fname);
+		output.open(tf_filename);
 
 		cout << "파싱 & 스테밍 & 단어 정보 생성 시작" << endl;
 		cout << "Doc.dat(문서 정보 파일) 생성 시작" << endl;
@@ -777,19 +660,33 @@ int main(int argc, char* argv[]) {
 		cout << "\t생성 완료" << endl << endl;
 	}
 	if (!if_exists("Index.dat")) {
-		// Create Inverse index file.
-		data_file.open(inverse_data_fname);
-
-		if (!data_file.is_open()) {
-			cout << "Index.dat Open Error!" << endl;
-			exit(-1);
+		if (!if_exists("TF.txt") && if_exists("Term.dat")) {
+			// Load Term.dat
+			cout << "Term.dat already exists. Now Loading...";
+			file.open("Term.dat");
+			load_term_file(file);
+			file.close();
+			cout << "\tLoading Finished." << endl;
 		}
-
-		cout << "Index.dat (역 색인 파일) 생성...";
-		create_inverted_index_file(data_file);
-		cout << "\t" << "생성완료" << endl;
-		data_file.close();
-
+		// Create Inverse index file.
+		if (if_exists("TF.txt")) {
+			if (word_data_table.empty()) {
+				// Load Term.dat
+				cout << "Term.dat already exists. Now Loading...";
+				file.open("Term.dat");
+				load_term_file(file);
+				file.close();
+				cout << "\tLoading Finished." << endl;
+				doc_count = 554028;
+			}
+			if (!if_exists(inverse_data_fname)) {
+				data_file.open(inverse_data_fname);
+				cout << "Index.dat (역 색인 파일) 생성...";
+				create_inverted_index_file(data_file);
+				cout << "\t" << "생성완료" << endl;
+				data_file.close();
+			}
+		}
 		//SORT Invert.dat
 		cout << "정렬 시작" << endl;
 		file.open(inverse_data_fname);
@@ -817,19 +714,19 @@ int main(int argc, char* argv[]) {
 
 	cout << "Processing Queries...";
 	// Query Processing
-	map< int, map<string, int> > queries;
 	file.open("topics25.txt");
-	queries = read_query_file(file);
+	// Query NO., word, TF(query), weight(query)
+	map< int, map<string, int>> queries = read_query_file(file);
 	file.close();
 
 	// Print out queries
-	//for (auto& query : queries) {
-	//	cout << query.first << endl;
-	//	for (auto& word : query.second) {
-	//		cout << word.first << " " << word.second << endl;
-	//	}
-	//	cout << endl;
-	//}
+	/*for (auto& query : queries) {
+		cout << query.first << endl;
+		for (auto& word : query.second) {
+			cout << word.first << " " << word.second << endl;
+		}
+		cout << endl;
+	}*/
 
 	cout << '\t' << "Done. Total : " << queries.size() << endl;
 
@@ -845,10 +742,9 @@ int main(int argc, char* argv[]) {
 	// Vector Space Model
 	//for (auto &query : queries) {
 	//	set<int> rel_docs = get_relevant_documents(iindex, query.second);
-	//	//set<int> rel_docs = get_relevant_documents(iindex, query.second, 1, 1, 1);
 	//	vector< pair<double, int> > result = vector_space_model(iindex, rel_docs, query.second);
 	//	// Print Vector Space Model Results in a relevance order.
-	//	print_final_result(docu_dat_file, result, query.second, query.first, outfile);
+	//	print_result(docu_dat_file, result, query.second, query.first, outfile);
 	//}
 	//outfile.close();
 
@@ -856,12 +752,13 @@ int main(int argc, char* argv[]) {
 
 	// Language Model (Dirichlet Smoothing)
 	for (auto &query : queries) {
-		set<int> rel_docs = get_relevant_documents(iindex, query.second);
-		//set<int> rel_docs = get_relevant_documents(iindex, query.second, 1, 1, 3);
-		vector< pair<double, int> > result = language_model(docu_dat_file, iindex, rel_docs, query.second);
-
+		map<string, map<int, pair<int, double>>> iindex_memory;
+		set<int> rel_docs = get_relevant_documents(iindex, query.second, iindex_memory);
+		//vector<pair<long double, int>> result = language_model(docu_dat_file, rel_docs, query.second, iindex_memory);
+		vector<pair<double, int>> result = language_model(docu_dat_file, rel_docs, query.second, iindex_memory);
+		//vector<pair<double, int>> result = language_model(docu_dat_file, iindex, rel_docs, query.second);
 		// Print Language Model Results in a relevance order.
-		print_final_result(docu_dat_file, result, query.second, query.first, outfile);
+		print_result(docu_dat_file, result, query.second, query.first, outfile);
 	}
 	outfile.close();
 
