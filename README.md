@@ -6,7 +6,7 @@
   - Link : https://docs.google.com/uc?id=0B6ev76WVXZNPVnVqOHhFRElOT2c&export=download
 
 ### Stemmer
-> Customized porter2 stemmer
+- Customized porter2 stemmer
 
 ### Retrieval model
 - Language model
