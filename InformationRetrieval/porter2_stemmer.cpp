@@ -30,6 +30,10 @@
  * SOFTWARE.
  */
 
+/*
+	Modified by dwPark.
+*/
+
 #include <algorithm>
 #include <utility>
 #include <iostream>
@@ -133,7 +137,7 @@ void Porter2Stemmer::trim(std::string& word)
     std::transform(word.begin(), word.end(), word.begin(), ::tolower);
     word.erase(std::remove_if(word.begin(), word.end(), [](char ch)
                    {
-                       return !((ch >= 'a' && ch <= 'z') || ch == '\'');
+						return !((ch >= 'a' && ch <= 'z') || ch == '\'');
                    }), word.end());
 }
 

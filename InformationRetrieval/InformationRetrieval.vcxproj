@@ -19,13 +19,25 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Constants.cpp" />
+    <ClCompile Include="FileIO.cpp" />
+    <ClCompile Include="Parameters.cpp" />
     <ClCompile Include="porter2_stemmer.cpp" />
-    <ClCompile Include="stemming.cpp" />
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="QueryProcessing.cpp" />
+    <ClCompile Include="RankingModule.cpp" />
+    <ClCompile Include="TextTransform.cpp" />
     <ClCompile Include="utility.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="DocumentEntity.h" />
+    <ClInclude Include="Constants.h" />
+    <ClInclude Include="Entities.h" />
+    <ClInclude Include="FileIO.h" />
+    <ClInclude Include="Parameters.h" />
     <ClInclude Include="porter2_stemmer.h" />
+    <ClInclude Include="QueryProcessing.h" />
+    <ClInclude Include="RankingModule.h" />
+    <ClInclude Include="TextTransform.h" />
     <ClInclude Include="utility.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
